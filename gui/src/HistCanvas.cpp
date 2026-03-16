@@ -14,9 +14,15 @@
 #include "TH1.h"
 #include "TH2.h"
 #include "TAxis.h"
+#include "TLatex.h"
+#include "TMultiGraph.h"
+#include "TLegend.h"
+#include <array>
 
 #include "HistCanvas.h"
 #include "QRootCanvas.h"
+
+#include <iostream>
 
 #define HIST_FONT_SIZE 0.07
 #define HIST_LABEL_SIZE 0.07
@@ -42,7 +48,7 @@ void HistCanvas::AddCanvas(int row, int column, int color)
     newCanvas->SetFrameFillColor(10); // white
 }
 
-void HistCanvas::UpdateHist(int index, TH1 *hist, bool auto_range)
+void HistCanvas::UpdateHist(int index, TH1 *hist, bool auto_range, std::string option)
 {
     if(!hist || index < 0 || index >= canvases.size())
         return;
@@ -63,7 +69,7 @@ void HistCanvas::UpdateHist(int index, TH1 *hist, bool auto_range)
     hist->GetYaxis()->SetLabelSize(HIST_LABEL_SIZE);
 
     hist->SetFillColor(fillColors[index]);
-    hist->Draw();
+    hist->Draw(option.c_str());
 
     canvases[index]->Refresh();
 }
@@ -97,10 +103,62 @@ void HistCanvas::UpdateHist(int index, TH2 *hist)
 
     canvases[index]->cd();
 
+    gPad->SetLogz();
+
     hist->GetXaxis()->SetLabelSize(HIST_LABEL_SIZE);
     hist->GetYaxis()->SetLabelSize(HIST_LABEL_SIZE);
 
     hist->Draw("colz");
 
     canvases[index]->Refresh();
+}
+
+void HistCanvas::UpdateHist(int index, TGraph *gr1, TGraph *gr2, TGraph *gr3, TLegend *legend)
+{
+    if((!gr1 && !gr2 && !gr3) || index < 0 || index >= canvases.size())
+        return;
+
+    canvases[index]->cd();
+
+    TMultiGraph *mg = new TMultiGraph();
+    
+    if(gr1) mg->Add(gr1);
+    if(gr2) mg->Add(gr2);
+    if(gr3) mg->Add(gr3);
+
+    mg->GetXaxis()->SetLabelSize(HIST_LABEL_SIZE);
+    mg->GetYaxis()->SetLabelSize(HIST_LABEL_SIZE);
+
+    mg->Draw("ALP");
+    if (legend) legend->Draw();
+
+    canvases[index]->Refresh();
+}
+
+//new
+ std::array<double, 2> HistCanvas::FitClusterEHist(TH1 *hist)
+{
+    /*if(!hist || index < 0 || index >= canvases.size())
+        return;
+
+    canvases[index]->cd();*/
+
+    double fit_min, fit_max;
+    double peak = hist->GetBinCenter( hist->GetMaximumBin() );
+    if( hist->GetBinContent( hist->GetMaximumBin() - 1 ) < 0.1 * hist->GetBinContent( hist->GetMaximumBin() ) ){
+        hist->SetBinContent( hist->GetMaximumBin(), 0);
+        peak = hist->GetBinCenter( hist->GetMaximumBin() );
+    }
+
+    fit_min = peak - 2. * 0.026 / sqrt(peak/1000.) * peak;
+    fit_max = peak + 2. * 0.026 / sqrt(peak/1000.) * peak;
+    TF1 *fitFunc = new TF1("fitFunc", "gaus", fit_min, fit_max);
+    hist->Fit(fitFunc, "RQ");
+    double mean = fitFunc->GetParameter(1);
+    double sigma = fitFunc->GetParameter(2);
+    std::string title = hist->GetTitle();
+    title += Form(" Peak: %.1f +- %.1f MeV, Res: %.2f %% / sqrt(E[GeV])", mean, sigma, sigma / mean * sqrt(mean/1000.) * 100. );
+    hist->SetTitle(title.c_str());
+    std::array<double, 2> result = {mean, sigma};
+    return result;
 }

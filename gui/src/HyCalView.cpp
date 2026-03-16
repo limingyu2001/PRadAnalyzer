@@ -6,9 +6,11 @@
 //============================================================================//
 
 #include "HyCalView.h"
+#include "HyCalModule.h"
 #include <cmath>
 #include <QWheelEvent>
 #include <QKeyEvent>
+#include <QMouseEvent>
 
 HyCalView::HyCalView(QWidget *parent)
 : QGraphicsView(parent)
@@ -40,6 +42,50 @@ void HyCalView::keyReleaseEvent(QKeyEvent *event)
     // release ctrl to disable drag mode
     if(event->key() == Qt::Key_Control) {
         setDragMode(NoDrag);
+    }
+}
+
+void HyCalView::mouseMoveEvent(QMouseEvent *event)
+{
+    QGraphicsView::mouseMoveEvent(event);
+    QPointF scenePos = mapToScene(event->pos());
+    QGraphicsItem* item = scene()->itemAt(scenePos, transform());
+    if (!item) {
+        QToolTip::hideText();
+        return;
+    }
+
+    HyCalModule* module = dynamic_cast<HyCalModule*>(item);
+    if (!module) {
+        QToolTip::hideText();
+        return;
+    }
+
+    std::string moduleName = module->GetName();
+    if (moduleName.empty()) {
+        QToolTip::hideText();
+        return;
+    }
+
+    HyCalScene* hycalScene = dynamic_cast<HyCalScene*>(scene());
+    if (!hycalScene) {
+        QToolTip::hideText();
+        return;
+    }
+
+    auto abnormalModules = hycalScene->getAbnormalModules();
+    if (abnormalModules.count(moduleName)) {
+        double changeRatio = abnormalModules[moduleName];
+        QString tip = QString(
+            "Ref PMT %1\n"
+            "Module: %2\n"
+            "Gain Change: %3%"
+        ).arg(QString::fromStdString(moduleName))
+         .arg(changeRatio * 100, 0, 'f', 1);
+
+        QToolTip::showText(event->globalPos(), tip, this);
+    } else {
+        QToolTip::hideText();
     }
 }
 

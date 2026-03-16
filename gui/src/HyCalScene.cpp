@@ -12,6 +12,7 @@
 #include "PRadEventViewer.h"
 #include "HyCalModule.h"
 #include "ConfigParser.h"
+#include "HyCalView.h"
 
 #if QT_VERSION >= 0x050000
 #include <QtWidgets>
@@ -28,11 +29,74 @@ QStringList HyCalScene::GetShapeList()
     return list;
 }
 
+HyCalScene::HyCalScene(PRadEventViewer *p, QObject *parent)
+: QGraphicsScene(parent), console(p),
+  pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false),
+  blinkState(false)
+{
+    blinkTimer = new QTimer(this);
+    blinkTimer->setInterval(1000);
+    connect(blinkTimer, &QTimer::timeout, [this]() {
+        blinkState = !blinkState;
+        this->update();
+    });
+    blinkTimer->start();
+}
+
+HyCalScene::HyCalScene(PRadEventViewer*p, qreal x, qreal y, qreal width, qreal height, QObject *parent)
+: QGraphicsScene(x, y, width, height, parent), console(p),
+  pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false),
+  blinkState(false)
+{
+    blinkTimer = new QTimer(this);
+    blinkTimer->setInterval(1000);
+    connect(blinkTimer, &QTimer::timeout, [this]() { blinkState = !blinkState; this->update(); });
+    blinkTimer->start();
+}
+
+HyCalScene::HyCalScene(PRadEventViewer *p, const QRectF &sceneRect, QObject *parent)
+: QGraphicsScene(sceneRect, parent), console(p),
+  pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false),
+  blinkState(false)
+{
+    blinkTimer = new QTimer(this);
+    blinkTimer->setInterval(1000);
+    connect(blinkTimer, &QTimer::timeout, [this]() { blinkState = !blinkState; this->update(); });
+    blinkTimer->start();
+}
+
 void HyCalScene::drawForeground(QPainter *painter, const QRectF &rect)
 {
     QGraphicsScene::drawForeground(painter, rect);
 
     painter->save();
+
+    for (const auto& [moduleName, changeRatio] : abnormalModules) {
+        HyCalModule* module = dynamic_cast<HyCalModule*>(GetModule(moduleName));
+        if (!module) continue;
+
+        QRectF moduleRect = module->boundingRect();
+        QRectF sceneRect = module->mapRectToScene(moduleRect);
+
+        if (blinkState) {
+            QPen blinkPen(Qt::blue, 3, Qt::DashLine);
+            blinkPen.setCosmetic(true);
+            painter->setPen(blinkPen);
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(sceneRect);
+
+            qreal crossSize = qMin(sceneRect.width(), sceneRect.height()) * 0.4;
+            QPointF center = sceneRect.center();
+            painter->drawLine(
+                center.x() - crossSize, center.y() - crossSize,
+                center.x() + crossSize, center.y() + crossSize
+            );
+            painter->drawLine(
+                center.x() + crossSize, center.y() - crossSize,
+                center.x() - crossSize, center.y() + crossSize
+            );
+        }
+    }
 
     if(showScalers)
         drawScalerBoxes(painter);
@@ -347,4 +411,34 @@ const
     }
 
     return ene;
+}
+
+void HyCalScene::markAbnormalModule(const std::string& moduleName, bool isAbnormal, double changeRatio)
+{
+    if (isAbnormal) {
+        abnormalModules[moduleName] = changeRatio;
+    } else {
+        abnormalModules.erase(moduleName);
+    }
+
+    if (abnormalModules.empty()) {
+        blinkTimer->stop();
+    } else if (!blinkTimer->isActive()) {
+        blinkTimer->start();
+    }
+
+    this->update();
+}
+
+void HyCalScene::clearAllAbnormalMarks()
+{
+    abnormalModules.clear();
+    blinkTimer->stop();
+    blinkState = false;
+    for (auto item : items()) {
+        HyCalModule *module = dynamic_cast<HyCalModule*>(item);
+        if (module) {
+            module->update();
+        }
+    }
 }

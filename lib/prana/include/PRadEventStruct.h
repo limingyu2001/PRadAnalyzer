@@ -223,6 +223,15 @@ struct EventData
     uint8_t trigger;
     uint64_t timestamp;
 
+    int32_t run_number = 0;
+
+    uint32_t control_unix_time = 0; 
+    uint64_t control_ti_timestamp = 0; 
+
+    std::string absolute_time_edt;
+    std::string absolute_time_utc;
+    double relative_time_sec; 
+
     // data banks
     std::vector< ADC_Data > adc_data;
     std::vector< TDC_Data > tdc_data;
@@ -231,10 +240,12 @@ struct EventData
 
     // constructors
     EventData()
-    : event_number(0), type(0), trigger(0), timestamp(0)
+    : event_number(0), type(0), trigger(0), timestamp(0), 
+      control_unix_time(0), control_ti_timestamp(0), relative_time_sec(-1.0)
     {}
     EventData(const uint8_t &t)
-    : event_number(0), type(t), trigger(0), timestamp(0)
+    : event_number(0), type(t), trigger(0), timestamp(0),
+      control_unix_time(0), control_ti_timestamp(0), relative_time_sec(-1.0)
     {}
     EventData(const uint8_t &t,
               const PRadTriggerType &trg,
@@ -243,6 +254,7 @@ struct EventData
               std::vector<GEM_Data> &gem,
               std::vector<DSC_Data> &dsc)
     : event_number(0), type(t), trigger((uint8_t)trg), timestamp(0),
+      control_unix_time(0), control_ti_timestamp(0), relative_time_sec(-1.0),
       adc_data(adc), tdc_data(tdc), gem_data(gem), dsc_data(dsc)
     {}
 
@@ -252,6 +264,11 @@ struct EventData
         type = 0;
         trigger = 0;
         timestamp = 0;
+        control_unix_time = 0;
+        control_ti_timestamp = 0;
+        absolute_time_edt.clear();
+        absolute_time_utc.clear();
+        relative_time_sec = -1.0;
         adc_data.clear();
         tdc_data.clear();
         gem_data.clear();

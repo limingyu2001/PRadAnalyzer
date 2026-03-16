@@ -6,6 +6,9 @@
 #include <QFont>
 #include "PRadHyCalModule.h"
 #include "datastruct.h"
+#include <vector>
+#include "PRadHyCalSystem.h"
+#include "PRadADCChannel.h"
 
 
 class PRadEventViewer;
@@ -32,6 +35,7 @@ public:
     const double &GetCustomValue() const {return custom_value;}
     QString GetReadID() const {return qname;}
     const double &GetEnergy() const {return energy;}
+    static std::vector<PRadADCChannel*> GetAllREFPMTChannels(PRadHyCalSystem* hycal_sys);
 
     // overload
     QRectF boundingRect() const;

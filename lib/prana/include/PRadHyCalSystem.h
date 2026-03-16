@@ -18,6 +18,7 @@
 #define ADC_BUCKETS 2000
 
 class TH1D;
+class TH2D;
 
 class PRadHyCalSystem : public ConfigObject
 {
@@ -104,6 +105,22 @@ public:
     void FillEnergyHist(const EventData &event);
     void ResetEnergyHist();
     TH1 *GetEnergyHist() const {return energy_hist;}
+    //new
+    TH2D *GetClusterEvsAngleHist(const int &type) const {
+        if(type == 1) return cluster_EvsAngle_hist1;
+        else if(type == 2) return cluster_EvsAngle_hist2;
+        else return cluster_EvsAngle_hist;
+    }
+    TH1D *GetSciCoinHitMapHist() const {return SciCoinHitMap_hist;}
+    TH1D *GetTotalHitMapHist() const {return TotalHitMap_hist;}
+    TH1D *GetClusterE_moduleHist(const int &id) const {
+        if(id >= 1 && id <= 1156)
+            return cluster_E_moduleHist[id-1];
+        else{
+            return energy_hist;
+        }
+    }
+    //end new
     void SaveHists(const std::string &path) const;
     std::vector<double> FitHist(const std::string &channel,
                                 const std::string &hist_name,
@@ -118,6 +135,14 @@ private:
     PRadHyCalDetector *hycal;
     PRadHyCalReconstructor recon;
     TH1D *energy_hist;
+    //new
+    TH2D *cluster_EvsAngle_hist;
+    TH2D *cluster_EvsAngle_hist1;
+    TH2D *cluster_EvsAngle_hist2;
+    TH1D *cluster_E_moduleHist[1156];
+    TH1D *SciCoinHitMap_hist;
+    TH1D *TotalHitMap_hist;
+    //end new
 
     std::vector<CalPeriod> cal_period;
 

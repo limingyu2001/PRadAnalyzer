@@ -6,8 +6,37 @@
 #include <QFutureWatcher>
 #include <vector>
 
+#include "FitUtils.h"
+#include "RefPMTParam.h"
+#include "GainParser.h"
+#include "GainDataStruct.h"
+#include "TGraphErrors.h"
+#include "TLegend.h"
+#include "TSpectrum.h"
+#include "TText.h" 
+
+
 #define HYCAL_SHIFT -50
 #define CARTESIAN_TO_HYCALSCENE(x, y) x+HYCAL_SHIFT, -y
+
+struct OnlineModuleGainData {
+    std::string module_name;
+    double cumulative_time;
+    double gain1;
+    double gain1_err;
+    double gain2;
+    double gain2_err;
+    double gain3;
+    double gain3_err;
+};
+
+struct OnlineRefPMTLMSData {
+    double cumulative_time;
+    double lms_signal[3];
+    double lms_error[3];
+};
+
+class TH1D;
 
 class HyCalScene;
 class HyCalView;
@@ -23,6 +52,9 @@ class PRadHyCalSystem;
 class PRadGEMSystem;
 class PRadCoordSystem;
 class PRadDetMatch;
+class ScintillatorScene;
+class ScintillatorModule;
+class ScintillatorView;
 
 #ifdef RECON_DISPLAY
 class ReconSettingPanel;
@@ -31,6 +63,7 @@ class ReconSettingPanel;
 #ifdef USE_ONLINE_MODE
 class PRadETChannel;
 class ETSettingPanel;
+class OnlineRefPMTCalculator;
 #endif
 
 #ifdef USE_CAEN_HV
@@ -55,6 +88,19 @@ enum HistType {
     EnergyTDCHist,
     ModuleHist,
     TaggerHist,
+    //new
+    RefPMTLMSHist,
+    RefPMTAlphaHist,
+    StabilityHist,
+    ModuleWaveformHist,
+
+    ClusterReconHist,
+    //end new
+};
+
+enum DetectorType {
+    HyCalDetector,
+    ScintillatorDetector
 };
 
 enum AnnoType {
@@ -70,6 +116,8 @@ enum ViewMode {
     PedestalView,
     SigmaView,
     CustomView,
+    ResolutionView,
+    CoinHitMapView,
     HighVoltageView,
     VoltageSetView,
 };
@@ -78,6 +126,15 @@ enum ViewerStatus {
     NO_INPUT,
     DATA_FILE,
     ONLINE_MODE,
+};
+
+struct ScintConfig
+{
+    QString name;
+    double width;
+    double height;
+    double cx;
+    double cy;
 };
 
 class PRadEventViewer : public QMainWindow
@@ -125,10 +182,14 @@ private slots:
     void eraseBufferAction();
     void findEvent();
     void editCustomValueLabel(QTreeWidgetItem* item, int column);
+    void switchDetector();
 
 private:
     void initView();
     void setupUI();
+    void resolutionHists();
+    TH1D* resolutionHistoryHist[1156];
+    int resolutionGood(int id);
     void generateSpectrum();
     void generateHyCalModules();
     void generateScalerBoxes();
@@ -145,6 +206,10 @@ private:
     void readCustomValue(const QString &filepath);
     void onlineUpdate(const size_t &max_events);
     bool onlineSettings();
+    void generateScintillatorModules();
+    void updateScintillator();
+    std::vector<ScintConfig> scintConfigs;
+    bool loadScintillatorConfig(const QString& file);
     QMenu *setupFileMenu();
     QMenu *setupCalibMenu();
     QMenu *setupToolMenu();
@@ -171,6 +236,8 @@ private:
     HistType histType;
     AnnoType annoType;
     ViewMode viewMode;
+    DetectorType currentDetector;
+    QPushButton *detectorSwitchBtn;
 
     HyCalModule *selection;
     Spectrum *energySpectrum;
@@ -178,6 +245,10 @@ private:
     HyCalScene *HyCal;
     HyCalView *view;
     HistCanvas *histCanvas;
+    ScintillatorScene *scintScene;
+    ScintillatorView *scintView;
+
+    std::vector<std::unique_ptr<ScintillatorModule>> scintModules;
 
     QString fileName;
 
@@ -208,6 +279,43 @@ private:
     QFuture<bool> future;
     QFutureWatcher<void> watcher;
 
+    TH1D *accumulateWaveform;
+
+    //gain monitoring
+    std::vector<std::vector<RefPMTLMSData>> refPMTLMSHistory;
+    std::map<std::string, std::vector<ModuleGainData>> moduleGainHistory;
+    std::vector<PRadADCChannel*> getAllREFPMTChannels();
+    std::string gainOutputDir;
+    std::map<std::string, std::pair<double, double>> moduleXRange;
+    std::array<std::map<std::string, double>, 3> lastRunGains; 
+    std::map<std::string, std::vector<ModuleGainData>>* moduleGainHistoryPtr;
+
+        // 稳定性图的返回结果
+    struct StabilityPlots {
+        // Gain 图：3 条线 + legend
+        std::vector<TGraphErrors*> gainGraphs;
+        TLegend* gainLegend = nullptr;
+        bool hasGainData = false;
+
+        // LMS 图：最多 3 条线 + legend
+        std::vector<TGraphErrors*> lmsGraphs;
+        TLegend* lmsLegend = nullptr;
+        bool hasLMSData = false;
+    };
+
+    StabilityPlots BuildStabilityPlots(
+        const std::string& moduleName,
+        bool is_online_mode,
+        std::map<std::string, std::vector<ModuleGainData>>& moduleGainHistory,
+        std::vector<std::vector<RefPMTLMSData>>& refPMTLMSHistory);
+    
+    std::pair<std::map<std::string, std::vector<OnlineModuleGainData>>, std::vector<OnlineRefPMTLMSData>> 
+    LoadOnlineGainData(const std::string& dir);
+
+    bool ParseOnlineGainFile(const std::string& filename, 
+                         std::map<std::string, std::vector<OnlineModuleGainData>>& moduleGainMap,
+                         std::vector<OnlineRefPMTLMSData>& refPMTLMSList);
+
 #ifdef USE_ONLINE_MODE
 public:
     void UpdateOnlineInfo();
@@ -220,6 +328,7 @@ private slots:
 private:
     void setupOnlineMode();
     QMenu *setupOnlineMenu();
+    OnlineRefPMTCalculator* online_refpmt_calc_;
 
     PRadETChannel *etChannel;
     QTimer *onlineTimer;

@@ -16,6 +16,7 @@
 #include "TFile.h"
 #include "TF1.h"
 #include "TH1D.h"
+#include "TH2D.h"
 
 
 
@@ -33,6 +34,24 @@ PRadHyCalSystem::PRadHyCalSystem(const std::string &path)
 
     // initialize energy histogram
     energy_hist = new TH1D("HyCal Energy", "Total Energy (MeV)", 2000, 0, 2500);
+    //new
+    cluster_EvsAngle_hist = new TH2D("Hit Energy vs Theta(0)", "Cluster Energy (MeV) vs Theta (deg) [all clusters]",
+                                      80, 0., 8., 2000, 0, 2500);
+    cluster_EvsAngle_hist1 = new TH2D("Hit Energy vs Theta(1)", "Cluster Energy (MeV) vs Theta (deg) [1 cluster]",
+                                      80, 0., 8., 2000, 0, 2500);
+    cluster_EvsAngle_hist2 = new TH2D("Hit Energy vs Theta(2)", "Cluster Energy (MeV) vs Theta (deg) [2 clusters]",
+                                      80, 0., 8., 2000, 0, 2500);
+    SciCoinHitMap_hist = new TH1D("Sci Coincidence Hit Map", "Sci Coincidence Hit Map;Module ID;Counts",
+                                     1156, 0.5, 1156.5);
+    TotalHitMap_hist = new TH1D("Total Hit Map", "Total Hit Map;Module ID;Counts",
+                                     1156, 0.5, 1156.5);
+    for(int i=0; i<1156; i++) {
+        std::string hist_name = "Cluster E W" + std::to_string(i+1);
+        cluster_E_moduleHist[i] = new TH1D(hist_name.c_str(),
+                                           hist_name.c_str(),
+                                           500, 0, 2500);
+    }
+    //end new
 
     if(!path.empty())
         Configure(path);
@@ -52,6 +71,16 @@ PRadHyCalSystem::PRadHyCalSystem(const PRadHyCalSystem &that)
 
     // copy histogram
     energy_hist = new TH1D(*that.energy_hist);
+    //new
+    cluster_EvsAngle_hist = new TH2D(*that.cluster_EvsAngle_hist);
+    cluster_EvsAngle_hist1 = new TH2D(*that.cluster_EvsAngle_hist1);
+    cluster_EvsAngle_hist2 = new TH2D(*that.cluster_EvsAngle_hist2);
+    SciCoinHitMap_hist = new TH1D(*that.SciCoinHitMap_hist);
+    TotalHitMap_hist = new TH1D(*that.TotalHitMap_hist);
+    for(int i=0; i<1156; i++) {
+        cluster_E_moduleHist[i] = new TH1D(*that.cluster_E_moduleHist[i]);
+    }
+    //end new
 
     // copy tdc
     for(auto tdc : that.tdc_list)
@@ -88,6 +117,22 @@ PRadHyCalSystem::PRadHyCalSystem(PRadHyCalSystem &&that)
 
     energy_hist = that.energy_hist;
     that.energy_hist = nullptr;
+    //new
+    cluster_EvsAngle_hist = that.cluster_EvsAngle_hist;
+    that.cluster_EvsAngle_hist = nullptr;
+    cluster_EvsAngle_hist1 = that.cluster_EvsAngle_hist1;
+    that.cluster_EvsAngle_hist1 = nullptr;
+    cluster_EvsAngle_hist2 = that.cluster_EvsAngle_hist2;
+    that.cluster_EvsAngle_hist2 = nullptr;
+    SciCoinHitMap_hist = that.SciCoinHitMap_hist;
+    that.SciCoinHitMap_hist = nullptr;
+    TotalHitMap_hist = that.TotalHitMap_hist;
+    that.TotalHitMap_hist = nullptr;
+    for(int i=0; i<1156; i++) {
+        cluster_E_moduleHist[i] = that.cluster_E_moduleHist[i];
+        that.cluster_E_moduleHist[i] = nullptr;
+    }
+    //end new
 }
 
 // destructor
@@ -95,6 +140,16 @@ PRadHyCalSystem::~PRadHyCalSystem()
 {
     delete hycal;
     delete energy_hist;
+    //new
+    delete cluster_EvsAngle_hist;
+    delete cluster_EvsAngle_hist1;
+    delete cluster_EvsAngle_hist2;
+    delete SciCoinHitMap_hist;
+    delete TotalHitMap_hist;
+    for(int i=0; i<1156; i++) {
+        delete cluster_E_moduleHist[i];
+    }
+    //end new
     ClearADCChannel();
     ClearTDCChannel();
 }
@@ -121,6 +176,16 @@ PRadHyCalSystem &PRadHyCalSystem::operator =(PRadHyCalSystem &&rhs)
     // release memories
     delete hycal;
     delete energy_hist;
+    //new
+    delete cluster_EvsAngle_hist;
+    delete cluster_EvsAngle_hist1;
+    delete cluster_EvsAngle_hist2;
+    delete SciCoinHitMap_hist;
+    delete TotalHitMap_hist;
+    for(int i=0; i<1156; i++) {
+        delete cluster_E_moduleHist[i];
+    }
+    //end new
     ClearADCChannel();
     ClearTDCChannel();
 
@@ -130,6 +195,22 @@ PRadHyCalSystem &PRadHyCalSystem::operator =(PRadHyCalSystem &&rhs)
     recon = std::move(rhs.recon);
     energy_hist = rhs.energy_hist;
     rhs.energy_hist = nullptr;
+    //new
+    cluster_EvsAngle_hist = rhs.cluster_EvsAngle_hist;
+    rhs.cluster_EvsAngle_hist = nullptr;
+    cluster_EvsAngle_hist1 = rhs.cluster_EvsAngle_hist1;
+    rhs.cluster_EvsAngle_hist1 = nullptr;
+    cluster_EvsAngle_hist2 = rhs.cluster_EvsAngle_hist2;
+    rhs.cluster_EvsAngle_hist2 = nullptr;
+    SciCoinHitMap_hist = rhs.SciCoinHitMap_hist;
+    rhs.SciCoinHitMap_hist = nullptr;
+    for(int i=0; i<1156; i++) {
+        cluster_E_moduleHist[i] = rhs.cluster_E_moduleHist[i];
+        rhs.cluster_E_moduleHist[i] = nullptr;
+    }
+    //end new
+    TotalHitMap_hist = rhs.TotalHitMap_hist;
+    rhs.TotalHitMap_hist = nullptr;
     cal_period = std::move(rhs.cal_period);
 
     adc_list = std::move(rhs.adc_list);
@@ -856,6 +937,41 @@ void PRadHyCalSystem::FillHists(const EventData &event)
         return;
 
     energy_hist->Fill(energy);
+
+    //new
+    if(energy > 0. && energy < 2500.) {
+        recon.Reconstruct(hycal, event);
+        auto &hycal_hit = hycal->GetHits();
+        for(const auto& hit : hycal_hit) {
+            double z = hit.z;
+            double E = hit.E;
+            double r = sqrt(hit.x * hit.x + hit.y * hit.y);
+            double theta = atan(r / (z+5553.1)) * (180.0 / 3.1415926); // in degrees
+            cluster_EvsAngle_hist->Fill(theta, E);
+            int module_id = hit.cid;
+            if(module_id <= 1000) continue;
+            module_id -= 1000;
+            TotalHitMap_hist->Fill(module_id);
+            if(hycal_hit.size() == 1 && hit.cid > 1000 && E > 1100. - 100. && E < 1100. + 100.) {
+                cluster_EvsAngle_hist->Fill(theta, E);
+                //auto module = hycal->GetModule(module_id);
+                //std::cout << "module_id(cid): " << module_id << "module_name" << module->GetName() << std::endl;
+                cluster_E_moduleHist[module_id-1]->Fill(E);
+
+                //test the scintillator coincidence hit map function
+                double x = hit.x, y = hit.y;
+                double sci_x = 330./5553. * x, sci_y = 330./5553. * y;
+                double sci_hole_halfWidth = 20.75 * 6. * 330./5553.;
+                if(fabs(sci_x) > sci_hole_halfWidth || fabs(sci_y) > sci_hole_halfWidth) {
+                    SciCoinHitMap_hist->Fill(module_id);
+                }
+            }
+            //if(hycal_hit.size() == 2) {
+            //    cluster_EvsAngle_hist2->Fill(theta, E);
+            //}
+        }
+    }
+    //end new
 
     for(auto &tdc : event.get_tdc_data())
     {

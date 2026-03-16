@@ -139,24 +139,41 @@ bool PRadETChannel::Read()
     et_att_id att = curr_stat->GetAttachID();
 
     // get the event
-    int status = et_event_get(et_id, att, &etEvent, ET_ASYNC, nullptr);
+    const int MAX_RETRIES = 3;
+    const int RETRY_DELAY_MS = 10;
+    int status = ET_ERROR;
+    int retry_count = 0;
 
-    switch(status)
-    {
-    case ET_OK:
-        break;
-    case ET_ERROR_EMPTY:
-        return false;
-    case ET_ERROR_DEAD:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: et is dead!"));
-    case ET_ERROR_TIMEOUT:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: got timeout!!"));
-    case ET_ERROR_BUSY:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: station is busy!"));
-    case ET_ERROR_WAKEUP:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: someone told me to wake up."));
-    default:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: unkown error!"));
+    while (retry_count < MAX_RETRIES) {
+        status = et_event_get(et_id, att, &etEvent, ET_ASYNC, nullptr);
+        
+        if (status == ET_OK) {
+            break;
+        } else if (status == ET_ERROR_BUSY) {
+            retry_count++;
+            usleep(RETRY_DELAY_MS * 1000);
+        } else {
+            switch(status)
+            {
+            case ET_ERROR_EMPTY:
+                return false;
+            case ET_ERROR_DEAD:
+                throw(PRadException(PRadException::ET_READ_ERROR,"et_client: et is dead!"));
+            case ET_ERROR_TIMEOUT:
+                throw(PRadException(PRadException::ET_READ_ERROR,"et_client: got timeout!!"));
+            case ET_ERROR_WAKEUP:
+                throw(PRadException(PRadException::ET_READ_ERROR,"et_client: someone told me to wake up."));
+            default:
+                throw(PRadException(PRadException::ET_READ_ERROR,"et_client: unkown error!"));
+            }
+        }
+    }
+
+    if (retry_count >= MAX_RETRIES && status != ET_OK) {
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), 
+            "et_client: station is busy! Retried %d times, still failed.", MAX_RETRIES);
+        throw(PRadException(PRadException::ET_READ_ERROR, err_msg));
     }
 
     // copy the data buffer
@@ -187,23 +204,40 @@ bool PRadETChannel::Write(void *buf, int nbytes)
 
     et_att_id att = curr_stat->GetAttachID();
 
-    int status = et_event_new(et_id, att, &etEvent, ET_SLEEP, nullptr, nbytes);
+    const int MAX_RETRIES = 3;
+    const int RETRY_DELAY_MS = 10;
+    int status = ET_ERROR;
+    int retry_count = 0;
 
-    switch(status) {
-    case ET_OK:
-        break;
-    case ET_ERROR_EMPTY:
-        return false;
-    case ET_ERROR_DEAD:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: et is dead!"));
-    case ET_ERROR_TIMEOUT:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: got timeout!!"));
-    case ET_ERROR_BUSY:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: station is busy!"));
-    case ET_ERROR_WAKEUP:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: someone told me to wake up."));
-    default:
-        throw(PRadException(PRadException::ET_READ_ERROR,"et_client: unkown error!"));
+    while (retry_count < MAX_RETRIES) {
+        status = et_event_new(et_id, att, &etEvent, ET_SLEEP, nullptr, nbytes);
+        
+        if (status == ET_OK) {
+            break;
+        } else if (status == ET_ERROR_BUSY) {
+            retry_count++;
+            usleep(RETRY_DELAY_MS * 1000);
+        } else {
+            switch(status) {
+            case ET_ERROR_EMPTY:
+                return false;
+            case ET_ERROR_DEAD:
+                throw(PRadException(PRadException::ET_READ_ERROR,"et_client: et is dead!"));
+            case ET_ERROR_TIMEOUT:
+                throw(PRadException(PRadException::ET_READ_ERROR,"et_client: got timeout!!"));
+            case ET_ERROR_WAKEUP:
+                throw(PRadException(PRadException::ET_READ_ERROR,"et_client: someone told me to wake up."));
+            default:
+                throw(PRadException(PRadException::ET_READ_ERROR,"et_client: unkown error!"));
+            }
+        }
+    }
+
+    if (retry_count >= MAX_RETRIES && status != ET_OK) {
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), 
+            "et_client: station is busy! Retried %d times, still failed (Write).", MAX_RETRIES);
+        throw(PRadException(PRadException::ET_READ_ERROR, err_msg));
     }
 
     // build et event

@@ -2,6 +2,8 @@
 #define QT_HYCAL_VIEW_H
 
 #include <QGraphicsView>
+#include <QToolTip>
+#include "HyCalScene.h"
 
 class HyCalView : public QGraphicsView
 {
@@ -14,6 +16,7 @@ protected:
     void wheelEvent(QWheelEvent *event);
     void keyPressEvent(QKeyEvent *event);
     void keyReleaseEvent(QKeyEvent *event);
+    void mouseMoveEvent(QMouseEvent *event) override;
 };
 
 #endif

@@ -3,10 +3,13 @@
 
 #include <QGraphicsScene>
 #include <vector>
+#include <map>
+#include <QTimer>
 #include "PRadHyCalDetector.h"
 
 class PRadEventViewer;
 class HyCalModule;
+class HyCalView;
 
 class HyCalScene : public QGraphicsScene, public PRadHyCalDetector
 {
@@ -61,18 +64,21 @@ public:
     };
 
 public:
-    HyCalScene(PRadEventViewer *p, QObject *parent = 0)
-    : QGraphicsScene(parent), console(p),
-      pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false)
-    {}
-    HyCalScene(PRadEventViewer *p, const QRectF &sceneRect, QObject *parent = 0)
-    : QGraphicsScene(sceneRect, parent), console(p),
-      pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false)
-    {}
-    HyCalScene(PRadEventViewer*p, qreal x, qreal y, qreal width, qreal height, QObject *parent = 0)
-    : QGraphicsScene(x, y, width, height, parent), console(p),
-      pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false)
-    {}
+    HyCalScene(PRadEventViewer *p, QObject *parent = 0);
+    //: QGraphicsScene(parent), console(p),
+      //pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false)
+    //{}
+    HyCalScene(PRadEventViewer *p, const QRectF &sceneRect, QObject *parent = 0);
+    //: QGraphicsScene(sceneRect, parent), console(p),
+      //pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false)
+    //{}
+    HyCalScene(PRadEventViewer*p, qreal x, qreal y, qreal width, qreal height, QObject *parent = 0);
+    //: QGraphicsScene(x, y, width, height, parent), console(p),
+      //pModule(nullptr), sModule(nullptr), rModule(nullptr), showScalers(false)
+    //{}
+
+    HyCalView* getView() const { return view; }
+    void setView(HyCalView* v) { view = v; }
 
     void AddTDCBox(const QString &name,
                    const QColor &textColor,
@@ -103,6 +109,10 @@ public:
     bool ReadModuleList(const std::string &path);
     double GetEnergy() const;
 
+    void markAbnormalModule(const std::string& moduleName, bool isAbnormal, double changeRatio);
+    void clearAllAbnormalMarks();
+    std::map<std::string, double> getAbnormalModules() const { return abnormalModules; }
+
 protected:
     void drawForeground(QPainter *painter, const QRectF &rect);
     void mousePressEvent(QGraphicsSceneMouseEvent *event);
@@ -115,9 +125,13 @@ private:
     void drawHitsMark(QPainter *painter, const QPointF &pos, const MarkAttributes &attr);
 
 private:
+    HyCalView* view = nullptr;
+    std::map<std::string, double> abnormalModules; 
+    QTimer* blinkTimer;
     PRadEventViewer *console;
     HyCalModule *pModule, *sModule, *rModule;
     bool showScalers;
+    bool blinkState;
     QList<TextBox> tdcBoxList;
     QVector<TextBox> scalarBoxList;
     QVector<HitsMark> hitsMarkList;

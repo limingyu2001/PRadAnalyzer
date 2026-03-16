@@ -8,6 +8,8 @@
 
 #include "PRadEvioParser.h"
 #include "PRadDataHandler.h"
+#include "PRadInfoCenter.h"
+#include "TimeUtils.h"
 #include <sstream>
 #include <iostream>
 #include <iomanip>
@@ -31,9 +33,13 @@ using namespace std;
 
 // constructor
 PRadEvioParser::PRadEvioParser(PRadDataHandler *handler)
-: myHandler(handler), event_number(0)
+: myHandler(handler), event_number(0), current_run_number(0), first_ti_recorded(false)
 {
     // place holder
+    time_base.prestart_unix = 0;
+    time_base.go_unix = 0;
+    time_base.ti_base = 0;
+    time_base.valid = false;
 }
 
 // destructor
@@ -43,6 +49,15 @@ PRadEvioParser::~PRadEvioParser()
 }
 
 
+void PRadEvioParser::resetTimeBase()
+{
+    time_base.prestart_unix = 0;
+    time_base.go_unix = 0;
+    time_base.ti_base = 0;
+    time_base.valid = false;
+    first_ti_recorded = false;
+    std::cout << "[EvioParser] Time base reset for new run" << std::endl;
+}
 
 //============================================================================//
 // Public Member Functions                                                    //
@@ -164,6 +179,8 @@ int PRadEvioParser::parseEvent(const PRadEventHeader *header)
     case CODA_Prestart:
     case CODA_Go:
     case CODA_End:
+        parseControlEvent(header);
+        break;
     default:
         // no need to parse these events
         return header->tag;
@@ -205,6 +222,24 @@ int PRadEvioParser::parseEvent(const PRadEventHeader *header)
         if(roc.joinable()) roc.join();
     }
 #endif
+
+    if (header->tag == CODA_Event && myHandler) {
+        EventData* ev = myHandler->GetCurrentEvent();
+        if (ev && time_base.valid) {
+            std::string abs_time_edt = calcAbsoluteTimeEDT(time_base, ev->timestamp);
+            std::string abs_time_utc = calcAbsoluteTimeUTC(time_base, ev->timestamp);
+            double rel_time_sec = calcRelativeTimeSec(time_base, ev->timestamp);
+
+            ev->absolute_time_edt = abs_time_edt;
+            ev->absolute_time_utc = abs_time_utc;
+            ev->relative_time_sec = rel_time_sec;
+
+            // std::cout << "[Online Monitor] Event #" << event_number 
+            //           << " | TI Timestamp: " << ev->timestamp 
+            //           << " | Relative Time: " << std::fixed << std::setprecision(6) << rel_time_sec << "s"
+            //           << " | Absolute Time (EDT): " << abs_time_edt << std::endl;
+        }
+    }
     // inform handler the end of this event
     myHandler->EndofThisEvent(event_number);
 
@@ -540,6 +575,23 @@ void PRadEvioParser::parseTIData(const uint32_t *data, const uint32_t &size, con
         tiData.latch_word = data[6] & 0xff;
         tiData.lms_phase = (data[8] >> 16) & 0xff;
         myHandler->FeedData(tiData);
+
+        uint64_t ti_timestamp = (uint64_t)tiData.time_high << 32 | tiData.time_low;
+        if (myHandler) {
+            EventData* ev = myHandler->GetCurrentEvent();
+            if (ev) {
+                ev->timestamp = ti_timestamp;
+                ev->control_ti_timestamp = ti_timestamp;
+            }
+        }
+
+        if (!first_ti_recorded && ti_timestamp != 0) {
+            time_base.ti_base = ti_timestamp;
+            time_base.valid = (time_base.go_unix != 0) || (time_base.prestart_unix != 0);
+            first_ti_recorded = true;
+            std::cout << "[EvioParser] Recorded first non-zero TI timestamp for run " << current_run_number << ": " 
+                      << time_base.ti_base << " (hex: 0x" << std::hex << time_base.ti_base << std::dec << ")" << std::endl;
+        }
     }
 }
 
@@ -579,3 +631,128 @@ unsigned int PRadEvioParser::trigger_to_bit(const PRadTriggerType &trg)
         return 1 << (int) trg;
 }
 
+
+void PRadEvioParser::parseControlEvent(const PRadEventHeader *header)
+{
+    if (header->length < 6) {
+        std::cerr << "[EvioParser] Invalid Control Event length = "
+                  << header->length << std::endl;
+        return;
+    }
+
+    const uint32_t *data = (const uint32_t *)&header[1];
+
+    uint32_t time_word = data[2];  
+    uint32_t A         = data[3];
+    uint32_t B         = data[4]; 
+    
+    if (header->tag == CODA_Prestart) {
+        int new_run_num = A;
+        if (new_run_num != current_run_number) {
+            std::cout << "[EvioParser] Detected new run number: " << new_run_num 
+                      << " (previous: " << current_run_number << ")" << std::endl;
+            resetTimeBase();
+            current_run_number = new_run_num;
+            time_base.prestart_unix = time_word;
+            PRadInfoCenter::SetRunNumber(new_run_num);
+            std::cout << "[EvioParser] Recorded Prestart Unix UTC for run " << new_run_num << ": " 
+                      << time_base.prestart_unix << " (" << toUTC(time_base.prestart_unix, 0) << ")" << std::endl;
+        } 
+        else if (time_base.prestart_unix == 0) {
+            time_base.prestart_unix = time_word;
+            std::cout << "[EvioParser] Recorded Prestart Unix UTC for run " << current_run_number << ": " 
+                      << time_base.prestart_unix << " (" << toUTC(time_base.prestart_unix, 0) << ")" << std::endl;
+        }
+    }
+
+    if (header->tag == CODA_Go) {
+        if (current_run_number != 0 && time_base.go_unix == 0) {
+            time_base.go_unix = time_word;
+            time_base.valid = true;
+            std::cout << "[EvioParser] Recorded Go Unix UTC for run " << current_run_number << ": " 
+                      << time_base.go_unix << " (" << toUTC(time_base.go_unix, 0) << ")" << std::endl;
+        }
+        else if (current_run_number == 0) {
+            std::cerr << "[EvioParser] Go event received but no valid run number, ignored" << std::endl;
+        }
+    }
+
+    if (myHandler) {
+        EventData* ev = myHandler->GetCurrentEvent();
+        if (ev) {
+            ev->control_unix_time = time_word;
+            ev->run_number = current_run_number;
+        }
+    }
+
+    std::string utc_time = "Unavailable";
+    if (time_word >= 1000000000) {
+        try {
+            std::chrono::system_clock::time_point tp = std::chrono::system_clock::from_time_t(time_word);
+            std::time_t t = std::chrono::system_clock::to_time_t(tp);
+            std::tm* utc_tm = std::gmtime(&t);
+            if (utc_tm) {
+                char buf[64];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", utc_tm);
+                utc_time = std::string(buf) + " (UTC)";
+            }
+        } catch (...) {}
+    }
+
+    std::string edt_time = "Unavailable";
+    if (time_word >= 1000000000) {
+        try {
+            std::chrono::system_clock::time_point tp = std::chrono::system_clock::from_time_t(time_word);
+            std::time_t t = std::chrono::system_clock::to_time_t(tp - std::chrono::hours(4));
+            std::tm* edt_tm = std::gmtime(&t);
+            if (edt_tm) {
+                char buf[64];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", edt_tm);
+                edt_time = std::string(buf) + " (EDT, UTC-4)";
+            }
+        } catch (...) {}
+    }
+
+    // std::cout << "\n=================================================\n";
+    // std::cout << "                CODA CONTROL EVENT               \n";
+    // std::cout << "=================================================\n";
+
+    // std::cout << " Tag        : 0x"
+    //           << std::hex << header->tag << std::dec << "\n";
+
+    // std::cout << " Time (raw) : " << time_word << " (0x" << std::hex << time_word << std::dec << ")\n";
+    // std::cout << " Time (UTC) : " << utc_time << "\n";
+    // std::cout << " Time (EDT) : " << edt_time << "\n";
+
+    // switch (header->tag)
+    // {
+    // case CODA_Prestart:
+    //     std::cout << " Type       : Prestart\n";
+    //     std::cout << " Run Number : " << A << "\n";
+    //     std::cout << " Run Type   : " << B << "\n";
+    //     break;
+
+    // case CODA_Sync:
+    //     std::cout << " Type       : Sync\n";
+    //     std::cout << " Events since last sync : " << A << "\n";
+    //     std::cout << " Events in run          : " << B << "\n";
+    //     break;
+
+    // case CODA_Go:
+    //     std::cout << " Type       : Go\n";
+    //     std::cout << " Events in run so far   : " << B << "\n";
+    //     break;
+
+    // case CODA_End:
+    //     std::cout << " Type       : End\n";
+    //     std::cout << " Total events in run    : " << B << "\n";
+    //     break;
+
+    // default:
+    //     std::cout << " Type       : Unknown Control Event\n";
+    //     std::cout << " A = " << A << ", B = " << B << "\n";
+    //     break;
+    // }
+
+    // std::cout << "-------------------------------------------------\n";
+}

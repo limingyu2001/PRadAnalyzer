@@ -22,7 +22,7 @@ LIB_OPTION = MULTI_THREAD
 # ONLINE_MODE     online events monitor
 # STANDARD_EVIO   using standard evio library instead of our specific code to read evio file
 # RECON_DISPLAY   add reconstruction display setting panel, show reconstructed hits
-GUI_OPTION = RECON_DISPLAY
+GUI_OPTION = RECON_DISPLAY ONLINE_MODE
 
 ####### Build rules
 first: all

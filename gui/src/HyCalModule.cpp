@@ -6,6 +6,7 @@
 //============================================================================//
 
 #include <cmath>
+#include <cctype>
 #include <string>
 #include "HyCalModule.h"
 #include "PRadEventViewer.h"
@@ -180,4 +181,19 @@ void HyCalModule::ShowOccupancy()
 void HyCalModule::ShowEnergy()
 {
     SetColor(energy);
+}
+
+//———————————————————————————get ADC channels of Ref PMTs---------------
+std::vector<PRadADCChannel*> HyCalModule::GetAllREFPMTChannels(PRadHyCalSystem* hycal_sys) {
+    std::vector<PRadADCChannel*> refChannels(3, nullptr);
+    const std::vector<PRadADCChannel*>& allChannels = hycal_sys->GetADCList();
+    for (auto* channel : allChannels) {
+        std::string chName = channel->GetName();
+        if (chName.find("LMS") != std::string::npos) {
+            if (chName.find("1") != std::string::npos) refChannels[0] = channel;
+            else if (chName.find("2") != std::string::npos) refChannels[1] = channel;
+            else if (chName.find("3") != std::string::npos) refChannels[2] = channel;
+        }
+    }
+    return refChannels;
 }

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include "datastruct.h"
 #include "PRadException.h"
+#include "TimeUtils.h"
 
 class PRadDataHandler;
 
@@ -22,6 +23,8 @@ public:
     void SetHandler(PRadDataHandler *h) {myHandler = h;}
     void SetEventNumber(const unsigned int &ev) {event_number = ev;}
     unsigned int GetEventNumber() const {return event_number;}
+
+    const TimeBase& getTimeBase() const { return time_base; }
 
 public:
     // static functions
@@ -43,10 +46,15 @@ private:
     void parseTIData(const uint32_t *data, const uint32_t &size, const int &roc_id);
     void parseEPICS(const uint32_t *data);
     uint32_t getAPVDataSize(const uint32_t *data);
+    void parseControlEvent(const PRadEventHeader *header);
+    void resetTimeBase();
 
 private:
     PRadDataHandler *myHandler;
     unsigned int event_number;
+    TimeBase time_base;
+    bool first_ti_recorded = false;
+    int current_run_number = 0;
 };
 
 #endif

@@ -20,7 +20,7 @@ DEFINES += MULTI_THREAD
 
 # enable online mode, it requires Event Transfer,
 # it is the monitoring process from CODA group
-#GUI_OPTION += ONLINE_MODE
+GUI_OPTION += ONLINE_MODE
 
 # enable high voltage control, it requires CAENHVWrapper library
 #GUI_OPTION += HV_CONTROL
@@ -30,7 +30,7 @@ DEFINES += MULTI_THREAD
 #GUI_OPTION += STANDARD_EVIO
 
 # enable the reconstruction display in GUI
-#GUI_OPTION += RECON_DISPLAY
+GUI_OPTION += RECON_DISPLAY
 
 ######################################################################
 # optional components end
@@ -62,7 +62,15 @@ HEADERS += include/PRadEventViewer.h \
            include/HtmlDelegate.h \
            include/QRootCanvas.h \
            include/HistCanvas.h \
-           include/LogsBox.h
+           include/LogsBox.h \
+           include/ModuleGainCalculator.h \
+	   include/RefPMTConfigDialog.h \
+	   include/GainParser.h \
+	   include/FitUtils.h \
+	   include/ScintillatorModule.h \
+           include/ScintillatorScene.h \
+           include/ScintillatorView.h
+
 
 SOURCES += src/main.cpp \
            src/PRadEventViewer.cpp \
@@ -74,7 +82,14 @@ SOURCES += src/main.cpp \
            src/HtmlDelegate.cpp \
            src/QRootCanvas.cpp \
            src/HistCanvas.cpp \
-           src/LogsBox.cpp
+           src/LogsBox.cpp \
+           src/FitUtils.cpp \ 
+           src/ModuleGainCalculator.cpp \
+           src/GainParser.cpp \
+           src/ScintillatorModule.cpp \
+           src/ScintillatorScene.cpp \
+           src/ScintillatorView.cpp
+
 
 LIBS += -L$$(PRAD_PATH)/lib -lprana -lprconf -lcana \
         -lgfortran \
@@ -94,10 +109,12 @@ contains(GUI_OPTION, ONLINE_MODE) {
     DEFINES += USE_ONLINE_MODE
     HEADERS += include/online_monitor/PRadETChannel.h \
                include/online_monitor/PRadETStation.h \
-               include/online_monitor/ETSettingPanel.h
+               include/online_monitor/ETSettingPanel.h \
+               include/online_monitor/OnlineRefPMTCalculator.h
     SOURCES += src/online_monitor/PRadETChannel.cpp \
                src/online_monitor/PRadETStation.cpp \
-               src/online_monitor/ETSettingPanel.cpp
+               src/online_monitor/ETSettingPanel.cpp \
+               src/online_monitor/OnlineRefPMTCalculator.cpp
     INCLUDEPATH += include/online_monitor $$(ET_INC)
     LIBS += -L$$(ET_LIB) -let -lexpat
     message("Online Monitor = Enabled")

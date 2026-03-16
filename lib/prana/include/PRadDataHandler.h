@@ -37,6 +37,7 @@ public:
 
     // mode change
     void SetOnlineMode(const bool &mode);
+    bool GetOnlineMode() const {return onlineMode;}
 
     // set systems
     void SetHyCalSystem(PRadHyCalSystem *hycal) {hycal_sys = hycal;}
@@ -49,11 +50,13 @@ public:
 
     // file reading and writing
     void Decode(const void *buffer);
-    void ReadFromDST(const std::string &path);
+    bool ReadFromDST(const std::string &path, const int &part);
     int ReadFromEvio(const std::string &path, int evt = -1, bool verbose = false);
     int ReadFromSplitEvio(const std::string &path, int split = -1, bool verbose = true);
+    int ReadFromSplitEvio_range(const std::string &path, int start, int end,  bool verbose = true);
     void WriteToDST(const std::string &path);
     void Replay(const std::string &r_path, int split = -1, const std::string &w_path = "");
+    void Replay_range(const std::string &r_path, int start, int end, const std::string &w_path = "");
 
     // data handler
     void Clear();
@@ -84,6 +87,8 @@ public:
     void InitializeByData(const std::string &path = "", int ref = DEFAULT_REF_PMT);
     void RefillEnergyHist();
     int FindEvent(int event_number) const;
+
+    EventData* GetCurrentEvent() { return new_event; }
 
 private:
     void waitEventProcess();

@@ -112,32 +112,40 @@ void PRadDataHandler::Decode(const void *buffer)
 }
 
 // read from DST format file
-void PRadDataHandler::ReadFromDST(const std::string &path)
-{
+bool PRadDataHandler::ReadFromDST(const std::string &path, const int &part)
+{   
+    int numEvents = 3000000;
+    int begin = (part < 0) ? 0 : part * numEvents;
+    int count = 0;
     try {
         dst_parser.OpenInput(path);
 
         std::cout << "Data Handler: Reading events from DST file "
-                  << "\"" << path << "\""
+                  << "\"" << path << "\"" << " part " << part
                   << std::endl;
-
-        while(dst_parser.Read())
-        {
-            switch(dst_parser.EventType())
-            {
-            case PRadDSTParser::Type::event:
-                // save data
-                event_data.emplace_back(dst_parser.GetEvent());
-                // fill histogram
-                 FillHistograms(event_data.back());
-                // count occupancy
-                if(hycal_sys) hycal_sys->Sparsify(event_data.back());
-                break;
-            case PRadDSTParser::Type::epics:
-                if(epic_sys) epic_sys->AddEvent(dst_parser.GetEPICS());
-                break;
-            default:
-                break;
+        dst_parser.ReadMap();
+        const auto& event_pos = dst_parser.GetInputMap().GetType(PRadDSTParser::Type::event);
+        int64_t pos = event_pos.empty() ? -1 : event_pos[begin];
+        if(dst_parser.Read(pos)){
+            while(dst_parser.Read() && count < numEvents)
+            {   
+                count++;
+                switch(dst_parser.EventType())
+                {
+                case PRadDSTParser::Type::event:
+                    // save data
+                    event_data.emplace_back(dst_parser.GetEvent());
+                    // fill histogram
+                    FillHistograms(event_data.back());
+                    // count occupancy
+                    if(hycal_sys) hycal_sys->Sparsify(event_data.back());
+                    break;
+                case PRadDSTParser::Type::epics:
+                    if(epic_sys) epic_sys->AddEvent(dst_parser.GetEPICS());
+                    break;
+                default:
+                    break;
+                }
             }
         }
 
@@ -150,6 +158,8 @@ void PRadDataHandler::ReadFromDST(const std::string &path)
                   << "Read from DST Aborted!" << std::endl;
     }
     dst_parser.CloseInput();
+    if(count == numEvents ) return true;
+    else return false;
  }
 
 
@@ -175,6 +185,18 @@ int PRadDataHandler::ReadFromSplitEvio(const std::string &path, int split, bool 
         }
         return count;
     }
+}
+
+int PRadDataHandler::ReadFromSplitEvio_range(const std::string &path, int start, int end, bool verbose)
+{
+    if(start < 0 || end < start) start = end = 0;
+    int count = 0;
+    for(int i = start; i <= end; ++i)
+    {
+        std::string split_path = path + "." + std::to_string(i);
+        count += ReadFromEvio(split_path.c_str(), -1, verbose);
+    }
+    return count;
 }
 
 // erase the data container and all the connected systems
@@ -481,6 +503,30 @@ void PRadDataHandler::Replay(const std::string &r_path, int split, const std::st
     replayMode = true;
 
     int count = ReadFromSplitEvio(r_path, split);
+
+    replayMode = false;
+
+    std::cout << "Replay done, took "
+              << timer.GetElapsedTime()/1000. << " s! "
+              << "Replayed " << count << " events."
+              << std::endl;
+    dst_parser.CloseOutput();
+}
+void PRadDataHandler::Replay_range(const std::string &r_path, int start, int end, const std::string &w_path)
+{
+    if(w_path.empty()) {
+        std::string file = "prad_" + std::to_string(PRadInfoCenter::GetRunNumber()) + ".dst";
+        dst_parser.OpenOutput(file);
+    } else {
+        dst_parser.OpenOutput(w_path);
+    }
+
+    std::cout << "Replay started!" << std::endl;
+    PRadBenchMark timer;
+
+    replayMode = true;
+
+    int count = ReadFromSplitEvio_range(r_path, start, end);
 
     replayMode = false;
 

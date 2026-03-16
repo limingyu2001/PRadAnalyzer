@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include "PRadDAQChannel.h"
 #include "TH1.h"
+#include "TH1D.h"
 
 
 class PRadHyCalModule;
@@ -66,6 +67,9 @@ public:
     const Pedestal &GetPedestal() const {return pedestal;}
     PRadHyCalModule *GetModule() const {return module;}
     PRadTDCChannel *GetTDC() const {return tdc_group;}
+
+    //test for plot new FADC raw data waveform
+    TH1D *GetWaveformHist() const;
 
     // histograms manipulations
     void ResetHists();

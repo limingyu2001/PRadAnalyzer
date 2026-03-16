@@ -4,6 +4,10 @@
 
 MAKEFILE      = Makefile
 
+# LIB setting, set options for the library
+# MULTI_THREAD    multi threading support on decoding raw data file
+LIB_OPTION = MULTI_THREAD
+
 ####### Compiler, tools and options
 CC            = gcc
 CXX           = g++

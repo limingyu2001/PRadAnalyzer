@@ -8,6 +8,9 @@
 #include <QApplication>
 #include <TApplication.h>
 #include "PRadEventViewer.h"
+#include "RefPMTConfigDialog.h"
+
+RefPMTConfig g_refPMTConfig;
 
 int main(int argc, char *argv[])
 {
@@ -19,6 +22,14 @@ int main(int argc, char *argv[])
 
     // Qt application
     QApplication app(argc, argv);
+
+    RefPMTConfigDialog configDialog;
+    if (configDialog.exec() == QDialog::Accepted) {
+        g_refPMTConfig = configDialog.getConfig();
+    } else {
+        g_refPMTConfig.selectedPMT = -1;
+        g_refPMTConfig.threshold = 0.2;
+    }
 
     // event viewer
     PRadEventViewer* viewer = new PRadEventViewer;

@@ -13,12 +13,18 @@
 #include "TH2.h"
 #include "TF1.h"
 #include "TSpectrum.h"
+#include "TRandom.h"
+
+#include <QMessageBox>
+
 
 #include <utility>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <iomanip>
 #include <unordered_map>
+#include <regex>
 
 #if QT_VERSION >= 0x050000
 #include <QtWidgets>
@@ -35,6 +41,10 @@
 #include "HtmlDelegate.h"
 #include "HistCanvas.h"
 #include "LogsBox.h"
+#include "GainParser.h"
+#include "ModuleGainCalculator.h"
+#include "ScintillatorModule.h"
+#include "ScintillatorScene.h"
 
 #include "PRadBenchMark.h"
 #include "PRadInfoCenter.h"
@@ -45,6 +55,8 @@
 #include "PRadTaggerSystem.h"
 #include "PRadHyCalSystem.h"
 #include "PRadGEMSystem.h"
+#include "FitUtils.h"
+#include "RefPMTParam.h"
 
 #ifdef RECON_DISPLAY
 #include "PRadHyCalCluster.h"
@@ -57,6 +69,7 @@
 #ifdef USE_ONLINE_MODE
 #include "online_monitor/PRadETChannel.h"
 #include "online_monitor/ETSettingPanel.h"
+#include "online_monitor/OnlineRefPMTCalculator.h"
 #endif
 
 #ifdef USE_CAEN_HV
@@ -68,6 +81,8 @@
 #include "evioFileChannel.hxx"
 #endif
 
+#define HIST_FONT_SIZE 0.07
+#define HIST_LABEL_SIZE 0.07
 
 
 //============================================================================//
@@ -80,11 +95,18 @@ PRadEventViewer::PRadEventViewer()
   hycal_sys(new PRadHyCalSystem()),
   gem_sys(new PRadGEMSystem()),
   event_number(0)
+#ifdef USE_ONLINE_MODE
+  , online_refpmt_calc_(new OnlineRefPMTCalculator())
+#endif
 {
     prad_root = getenv("PRAD_PATH");
     if(prad_root.size() && prad_root.back() != '/') {
         prad_root += "/";
     }
+
+    currentDetector = HyCalDetector;
+
+    accumulateWaveform = new TH1D("AccumulateWaveform", "Accumulate Waveform", 64, 0.5, 64.5);
 
     // build connections
     handler->SetEPICSystem(epic_sys);
@@ -93,12 +115,22 @@ PRadEventViewer::PRadEventViewer()
     handler->SetGEMSystem(gem_sys);
     initView();
     setupUI();
+    resolutionHists();
+
+    gainOutputDir = "module_gain_results";
+    try {
+        GainParser::CreateOutputDirectory(gainOutputDir);
+    } catch (const std::exception &e) {
+        QMessageBox::critical(this, tr("Error"), tr("Failed to create directory: %1").arg(e.what()));
+    }
+    GainParser::ParseAllGainFiles(gainOutputDir, moduleGainHistory, refPMTLMSHistory); 
 }
 
 PRadEventViewer::~PRadEventViewer()
 {
 #ifdef USE_ONLINE_MODE
     delete etChannel;
+    delete online_refpmt_calc_;
 #endif
 #ifdef USE_CAEN_HV
     delete hvSystem;
@@ -114,11 +146,21 @@ PRadEventViewer::~PRadEventViewer()
     delete tagger_sys;
 }
 
-// set up the view for HyCal
+// set up the view for HyCal and Veto Scintillator
 void PRadEventViewer::initView()
 {
     HyCal = new HyCalScene(this, -800, -800, 1600, 1600);
     HyCal->setBackgroundBrush(QColor(255, 255, 238));
+
+    scintScene = new ScintillatorScene(this);
+    scintScene->setSceneRect(-500,-500,1000,1000);
+    scintScene->setBackgroundBrush(QColor(30,30,30));
+
+    // load scintillator geometry
+    QString scintConf = QString::fromStdString(prad_root) + "config/scintillator.conf";
+    if(!loadScintillatorConfig(scintConf))
+        qWarning() << "Failed to load scintillator config:" << scintConf;
+    generateScintillatorModules();
 
     generateScalerBoxes();
     generateSpectrum();
@@ -354,6 +396,13 @@ void PRadEventViewer::createControlPanel()
     histTypeBox->addItem(tr("Energy&TDC Hist"));
     histTypeBox->addItem(tr("Module Hist"));
     histTypeBox->addItem(tr("Tagger Hist"));
+    //new
+    histTypeBox->addItem(tr("Ref PMT LMS Hist")); 
+    histTypeBox->addItem(tr("Ref PMT alpha and pedestal Hist"));
+    histTypeBox->addItem(tr("Stability Hist"));
+    histTypeBox->addItem(tr("Module Waveform"));
+    histTypeBox->addItem(tr("Cluster Recon Hist"));
+    //end new
     annoTypeBox = new QComboBox();
     annoTypeBox->addItem(tr("No Annotation"));
     annoTypeBox->addItem(tr("Module ID"));
@@ -365,6 +414,8 @@ void PRadEventViewer::createControlPanel()
     viewModeBox->addItem(tr("Show Pedestal"));
     viewModeBox->addItem(tr("Show Ped. Sigma"));
     viewModeBox->addItem(tr("Show Custom Map"));
+    viewModeBox->addItem(tr("Show Resolution"));
+    viewModeBox->addItem(tr("Show Coin Hit Map"));
 #ifdef USE_CAEN_HV
     viewModeBox->addItem(tr("Show High Voltage"));
     viewModeBox->addItem(tr("Show HV Setting"));
@@ -384,8 +435,13 @@ void PRadEventViewer::createControlPanel()
 
     QGridLayout *layout = new QGridLayout();
 
+    detectorSwitchBtn = new QPushButton(tr("Switch to Scintillator"));
+    detectorSwitchBtn->setStyleSheet("QPushButton { padding: 5px; background-color: #4CAF50; color: white; border-radius: 4px; }");
+    connect(detectorSwitchBtn, &QPushButton::clicked, this, &PRadEventViewer::switchDetector);
+    layout->addWidget(detectorSwitchBtn,    0, 1, 1, 1);
+
     layout->addWidget(eventSpin,            0, 0, 1, 1);
-    layout->addWidget(eventCntLabel,        0, 1, 1, 1);
+    layout->addWidget(eventCntLabel,        0, 2, 1, 1);
     layout->addWidget(histTypeBox,          1, 0, 1, 1);
     layout->addWidget(viewModeBox,          1, 1, 1, 1);
     layout->addWidget(annoTypeBox,          1, 2, 1, 1);
@@ -401,6 +457,37 @@ void PRadEventViewer::createControlPanel()
     controlPanel = new QWidget(this);
     controlPanel->setLayout(layout);
 
+}
+
+void PRadEventViewer::switchDetector()
+{
+    if(currentDetector == HyCalDetector)
+    {
+        currentDetector = ScintillatorDetector;
+
+        detectorSwitchBtn->setText("Switch to HyCal");
+
+        view->setScene(scintScene);
+        view->fitInView(scintScene->sceneRect(), Qt::KeepAspectRatio);
+
+        lStatusLabel->setText("Current Detector: Scintillator");
+
+        view->resetTransform();
+        view->centerOn(0,0);
+    }
+    else
+    {
+        currentDetector = HyCalDetector;
+
+        detectorSwitchBtn->setText("Switch to Scintillator");
+
+        view->setScene(HyCal);
+
+        lStatusLabel->setText("Current Detector: HyCal");
+
+        view->resetTransform();
+        AutoScale();
+    }
 }
 
 // status bar
@@ -551,7 +638,13 @@ QColor PRadEventViewer::GetColor(const double &val)
 
 // refresh all the view
 void PRadEventViewer::Refresh()
-{
+{   
+    if(currentDetector == ScintillatorDetector)
+    {
+        updateScintillator();
+        return;
+    }
+
     switch(viewMode)
     {
     default:
@@ -571,6 +664,68 @@ void PRadEventViewer::Refresh()
     case CustomView:
         HyCal->ModuleAction(&HyCalModule::ShowCustomValue);
         break;
+    case ResolutionView:
+    {
+        auto moduleList = HyCal->GetModuleList();
+        for(auto m : moduleList)        
+        {
+            HyCalModule *module = (HyCalModule*)m;
+            QString ID = module->GetReadID();
+            if(ID.startsWith("G"))
+            {
+                module->SetColor(QColor(255, 255, 255)); //white for LG modules
+                continue;
+            }
+            
+            int id = ID.mid(1).toInt();
+
+            if(resolutionGood(id) == 0) 
+                module->SetColor(QColor(0, 255, 0)); //green
+            if(resolutionGood(id) == 1)
+                module->SetColor(QColor(255, 0, 255)); //magenta
+            if(resolutionGood(id) == 2)
+                module->SetColor(QColor(255, 255, 0)); //yellow
+            if(resolutionGood(id) == 3)
+                module->SetColor(QColor(0, 0, 255)); //blue
+            if(resolutionGood(id) == 4)
+                module->SetColor(QColor(255, 255, 255)); //white
+            if(resolutionGood(id) == 5)
+                module->SetColor(QColor(0, 0, 0)); //black
+        }
+        std::cout << "Resolution view refreshed." << std::endl;
+        std::cout << "Green: good resolution and energy;" << std::endl;
+        std::cout << "Magenta: energy not as expected;" << std::endl;
+        std::cout << "Yellow: expected energy but bad resolution;" << std::endl;
+        std::cout << "Blue: good resolution but energy not stable;" << std::endl;
+        std::cout << "Black: resolution not stable;" << std::endl;
+        std::cout << "White: not used;" << std::endl;
+        break;
+    }
+
+    case CoinHitMapView:
+    {
+        auto moduleList = HyCal->GetModuleList();
+        for(auto m : moduleList){
+            HyCalModule *module = (HyCalModule*)m;
+            QString ID = module->GetReadID();
+            if(ID.startsWith("G")){
+                module->SetColor(QColor(255, 255, 255)); //white for LG modules
+                continue; // skip LG modules
+            }
+            int id = ID.mid(1).toInt();
+            TH1* hist = hycal_sys->GetSciCoinHitMapHist();
+            TH1* hist2 = hycal_sys->GetTotalHitMapHist();
+            double coinHitRate = 0;
+            if(hist != nullptr && hist2 != nullptr && hist2->GetBinContent(id) != 0)
+                coinHitRate = hist->GetBinContent(id)/hist2->GetBinContent(id)*1000.;
+            //double coinHitRate = GetCoinHitRate(id);
+            //std::cout << "Module " << id << ": Coin Hit Rate = " << coinHitRate << std::endl;
+            module->SetColor(energySpectrum->GetColor(coinHitRate));
+        }
+        
+        
+        break;
+    }
 #ifdef USE_CAEN_HV
     case HighVoltageView:
     {
@@ -610,6 +765,16 @@ void PRadEventViewer::eraseData()
 {
     handler->Clear();
     updateEventRange();
+
+    for(auto &m : scintModules)
+    {
+        m->Reset();
+    }
+
+    if (HyCal) {
+        HyCal->clearAllAbnormalMarks();
+    }
+    view->update();
 }
 
 //============================================================================//
@@ -637,24 +802,65 @@ void PRadEventViewer::openDataFile()
 
     PRadBenchMark timer;
 
+    int eventCount = 0;
+    int epicCount = 0;
+    int fileCount = 0;
     for(QString &file : fileList)
     {
         //TODO, dialog to notice waiting
 //        QtConcurrent::run(this, &PRadEventViewer::readEventFromFile, fileName);
         fileName = file;
+        fileCount++;
+        if(fileCount > 1) eraseData();
         if(fileName.contains(".dst")) {
-            handler->ReadFromDST(fileName.toStdString());
+            //handler->ReadFromDST(fileName.toStdString(), 0);
+            int part = 0;
+            while(handler->ReadFromDST(fileName.toStdString(), part)){
+                part++;
+                eventCount += handler->GetEventCount();
+                epicCount += epic_sys->GetEventCount();
+                eraseData();
+            }
+            eventCount += handler->GetEventCount();
+            epicCount += epic_sys->GetEventCount();
         } else {
             readEventFromFile(fileName);
+            eventCount += handler->GetEventCount();
+            epicCount += epic_sys->GetEventCount();
         }
         UpdateStatusBar(DATA_FILE);
     }
 
-    std::cout << "Parsed " << handler->GetEventCount() << " events and "
-              << epic_sys->GetEventCount() << " EPICS events from "
+    if (!fileList.empty()) {
+        // If multiple files are selected, the output will be generated using the Run number of the last file by default
+        ModuleGainCalculator gainCalculator(this);
+        bool calcSuccess = gainCalculator.CalculateAndSave(
+            hycal_sys,                
+            gainOutputDir,          
+            fileList.back().toStdString(), 
+            moduleGainHistory,      
+            lastRunGains,         
+            HyCal         
+        );
+        (void)calcSuccess;
+    }
+    std::cout << "Parsed " << eventCount << " events and "
+              << epicCount << " EPICS events from "
               << fileList.size() << " files." << std::endl
               << " Used " << timer.GetElapsedTime() << " ms."
               << std::endl;
+    
+    // fit cluster energy histograms for all modules, write in database for later use
+    PRadInfoCenter::SetRunNumber(fileList[0].toStdString());
+    std::ofstream resolution_data(prad_root + Form("database/HyCal_resolution_monitor/%d.dat", PRadInfoCenter::GetRunNumber()));
+    for(int i=0; i<1156; i++){
+        int ModuleID = i+1;
+        auto result = histCanvas->FitClusterEHist(hycal_sys->GetClusterE_moduleHist(ModuleID));
+        double mean = result[0];
+        double sigma = result[1];
+        resolution_data << ModuleID << " " << mean << " " << sigma << std::endl;
+    }
+    resolution_data.close();
 
     updateEventRange();
 }
@@ -1020,6 +1226,92 @@ void PRadEventViewer::UpdateHistCanvas()
         histCanvas->UpdateHist(1, tagger_sys->GetTCounterHist());
         histCanvas->UpdateHist(2, hycal_sys->GetEnergyHist());
         break;
+
+    //Modified from Mingyu
+    case RefPMTLMSHist:{
+        auto refChannels = HyCalModule::GetAllREFPMTChannels(hycal_sys);
+        histCanvas->UpdateHist(0, refChannels[0]->GetHist("LMS"));
+        histCanvas->UpdateHist(1, refChannels[1]->GetHist("LMS"));
+        histCanvas->UpdateHist(2, refChannels[2]->GetHist("LMS"));
+        break;
+    }
+    case RefPMTAlphaHist:{
+        auto refChannels = HyCalModule::GetAllREFPMTChannels(hycal_sys);
+
+        TH1* hist0 = refChannels[0] ? refChannels[0]->GetHist("Physics") : nullptr;
+        TH1* hist1 = refChannels[1] ? refChannels[1]->GetHist("Physics") : nullptr;
+        TH1* hist2 = refChannels[2] ? refChannels[2]->GetHist("Physics") : nullptr;
+        if (hist0 != nullptr) hist0->SetTitle("Ref1:alpha and pedestal");
+        if (hist1 != nullptr) hist1->SetTitle("Ref2:alpha and pedestal");
+        if (hist2 != nullptr) hist2->SetTitle("Ref3:alpha and pedestal");
+        histCanvas->UpdateHist(0, hist0);
+        histCanvas->UpdateHist(1, hist1);
+        histCanvas->UpdateHist(2, hist2);
+        break;
+    }
+    case StabilityHist:{
+        if (!selection || !selection->GetChannel()) {
+            QMessageBox::information(this, tr("Info"), tr("Please select a module first!"));
+            break;
+        }
+
+        bool is_online_mode = handler->GetOnlineMode();
+        std::string moduleName = selection->GetChannel()->GetName();
+
+        auto plots = BuildStabilityPlots(moduleName, is_online_mode,
+                                            moduleGainHistory, refPMTLMSHistory);
+        this->moduleGainHistoryPtr = &moduleGainHistory;
+
+        if (!plots.hasGainData) {
+            std::string msg = is_online_mode
+                ? tr("No online gain history found for module: %1").arg(moduleName.c_str()).toStdString()
+                : tr("No gain history found for module: %1").arg(moduleName.c_str()).toStdString();
+            QMessageBox::information(this, tr("Info"), tr(msg.c_str()));
+            break;
+        }
+        histCanvas->UpdateHist(0, 
+            plots.gainGraphs[0], plots.gainGraphs.size() > 1 ? plots.gainGraphs[1] : nullptr,
+            plots.gainGraphs.size() > 2 ? plots.gainGraphs[2] : nullptr,
+            plots.gainLegend);
+
+        if (!plots.hasLMSData) {
+            QMessageBox::information(this, tr("Info"), tr("No LMS history found for reference PMTs!"));
+        } else {
+            histCanvas->UpdateHist(2, plots.lmsGraphs[0], plots.lmsGraphs.size() > 1 ? plots.lmsGraphs[1] : nullptr,
+                plots.lmsGraphs.size() > 2 ? plots.lmsGraphs[2] : nullptr, 
+                plots.lmsLegend);
+        }
+
+        /*auto rangeIt = moduleXRange.find(moduleName);
+        if (rangeIt != moduleXRange.end())
+            onApplyXRange(rangeIt->second.first, rangeIt->second.second);
+        emit enableXControls(true);
+        internalUpdateXRangeEdits();*/
+        break;
+    }
+        
+    case ModuleWaveformHist:{
+        if(selection && selection->GetChannel()) {
+            TH1D *waveformHist = selection->GetChannel()->GetWaveformHist();
+            for (int i = 1; i <= waveformHist->GetNbinsX(); ++i) {
+                accumulateWaveform->SetBinContent(i, accumulateWaveform->GetBinContent(i) + waveformHist->GetBinContent(i));
+            }
+            histCanvas->UpdateHist(0, waveformHist);
+            histCanvas->UpdateHist(1, accumulateWaveform);
+        }
+        break;
+    }
+    //new
+    case ClusterReconHist:
+        if(selection && selection->GetChannel()) {
+            QString ID = selection->GetReadID();
+            int id = ID.mid(1).toInt();
+            histCanvas->UpdateHist(0, hycal_sys->GetClusterE_moduleHist(id), 0, "");
+            histCanvas->UpdateHist(1, resolutionHistoryHist[id-1], false, "PE");
+        }
+        histCanvas->UpdateHist(2, hycal_sys->GetClusterEvsAngleHist(0));
+        break;
+    //end new
     }
 }
 
@@ -1466,6 +1758,7 @@ void PRadEventViewer::setupOnlineMode()
     connect(&watcher, SIGNAL(finished()), this, SLOT(startOnlineMode()));
 
     etChannel = new PRadETChannel();
+    online_refpmt_calc_->Init(hycal_sys);
 }
 
 QMenu *PRadEventViewer::setupOnlineMenu()
@@ -1547,7 +1840,7 @@ void PRadEventViewer::startOnlineMode()
     Refresh();
 
     // Start online timer
-    onlineTimer->start(5000);
+    onlineTimer->start(2000);
 }
 
 void PRadEventViewer::stopOnlineMode()
@@ -1590,6 +1883,8 @@ void PRadEventViewer::onlineUpdate(const size_t &max_events)
         for(num = 0; etChannel->Read() && num < max_events; ++num)
         {
             handler->Decode(etChannel->GetBuffer());
+            const EventData& current_event = handler->GetEvent(0);
+            online_refpmt_calc_->ProcessOnlineEvent(current_event);
         }
 
         if(num) {
@@ -1752,3 +2047,472 @@ void PRadEventViewer::restoreHVSetting()
     hvSystem->StartMonitor();
 }
 #endif
+
+//create histograms for resolution monitoring
+void PRadEventViewer::resolutionHists()
+{
+    std::string dir = prad_root + "database/HyCal_resolution_monitor/";
+    std::vector<std::string> files;
+
+    for(const auto & entry : std::filesystem::directory_iterator(dir))
+        files.push_back(entry.path().filename().string());
+    
+    if(files.empty()) return;
+
+    std::sort(files.begin(), files.end());
+
+    int runNum_begin = std::stoi(files.front());
+    int runNum_end = std::stoi(files.back());
+    int binNum = runNum_end - runNum_begin + 1;
+
+    for(int i=0; i<1156; i++){
+        resolutionHistoryHist[i] = new TH1D(
+            Form("ClusterE_module%d", i+1), 
+            Form("Recon E of Module %d", i+1), binNum, runNum_begin-0.5, runNum_end+0.5);
+        resolutionHistoryHist[i]->GetXaxis()->SetTitle("Run Number");
+        resolutionHistoryHist[i]->GetYaxis()->SetTitle("E [MeV]");
+        resolutionHistoryHist[i]->SetMarkerStyle(20);
+        resolutionHistoryHist[i]->SetMarkerSize(0.8);
+        resolutionHistoryHist[i]->SetLineWidth(2);        
+    }
+
+    for(const auto &name : files){
+        std::cout << name << std::endl;
+        std::ifstream resolution_data(dir + name);
+        int ModuleID;
+        double mean, sigma;
+        while(resolution_data >> ModuleID >> mean >> sigma){
+            resolutionHistoryHist[ModuleID-1]->SetBinContent(std::stoi(name)-runNum_begin+1, mean);
+            resolutionHistoryHist[ModuleID-1]->SetBinError(std::stoi(name)-runNum_begin+1, sigma);
+        }
+    }
+
+}
+
+int PRadEventViewer::resolutionGood(const int moduleID){
+    if(moduleID < 1 || moduleID > 1156)
+        return 4; //marked as white
+    bool reso_good = true, energy_stable = true, energy_good = true, resolution_stable = true;
+    //first check the resolution number
+    int binNum = resolutionHistoryHist[moduleID-1]->GetNbinsX();
+    double max = resolutionHistoryHist[moduleID-1]->GetMaximum();
+    double min = 1e9;
+    double sum = 0; int valid_bins = 0;
+    //double beam_energy = PRadInfoCenter::GetBeamEnergy();
+    double beam_energy = 1100.;
+    double resolution[binNum];
+    for(int i=1; i<=binNum; i++){
+        double error = resolutionHistoryHist[moduleID-1]->GetBinError(i);
+        double meanE = resolutionHistoryHist[moduleID-1]->GetBinContent(i);
+        if(meanE <= 0) continue; // no data for this run, skip
+        if(meanE < min) min = meanE;
+        if( fabs(meanE-beam_energy) > 0.025 / sqrt(beam_energy/1000.) * beam_energy ) // energy out of expected range, mark as bad
+            energy_good = false;
+        resolution[i-1] = error / meanE * sqrt(meanE/1000.);
+        if(resolution[i-1] > 0.03 || resolution[i-1] < 0.015) // resolution out of expected range, mark as bad
+            reso_good = false;
+        sum += meanE;
+        valid_bins++;
+    }
+    double mean = sum / valid_bins;
+    if(max - min > 6. * 0.025 / sqrt(mean/1000.) / sqrt(valid_bins) * mean) // peak center energy has large fluctuation, mark as bad
+        energy_stable = false;
+    for(int i=1; i<binNum; i++){
+        if(resolution[i] <= 0) continue;
+        if(resolution[i]-resolution[i-1] > 0.004) // resolution fluctuation too large, mark as bad
+            resolution_stable = false;
+    }
+    if(binNum >= 4) {
+        if( (resolution[binNum-1]+resolution[binNum-2])/2. - (resolution[binNum-3]+resolution[binNum-4])/2. > 0.002 )
+            resolution_stable = false;
+    }
+    
+    if(!energy_good) return 1; //marked as magenta
+    else if(!reso_good) return 2; // marked as yellow
+    else if(!energy_stable) return 3; // marked as blue
+    else if(!resolution_stable) return 5; // marked as black
+    else return 0; // marked as green
+    
+}
+
+PRadEventViewer::StabilityPlots PRadEventViewer::BuildStabilityPlots(
+    const std::string& moduleName,
+    bool is_online_mode,
+    std::map<std::string, std::vector<ModuleGainData>>& moduleGainHistory,
+    std::vector<std::vector<RefPMTLMSData>>& refPMTLMSHistory)
+{
+    StabilityPlots plots;
+
+    // ============ 1.load data
+    moduleGainHistory.clear();
+    refPMTLMSHistory.clear();
+
+    if (!is_online_mode) {
+        std::string gainDir = std::string("module_gain_results") + QString(QDir::separator()).toStdString();
+        GainParser::ParseAllGainFiles(gainDir, moduleGainHistory, refPMTLMSHistory);
+    } else {
+        auto onlineDataPair = LoadOnlineGainData("online_data");
+        auto& online_gain_data  = onlineDataPair.first;
+        auto& online_refpmt_data = onlineDataPair.second;
+
+        auto it = online_gain_data.find(moduleName);
+        if (it != online_gain_data.end()) {
+            for (const auto& od : it->second) {
+                ModuleGainData data;
+                data.cumulative_time = od.cumulative_time;
+                data.gain1     = od.gain1;     data.gain1_err = od.gain1_err;
+                data.gain2     = od.gain2;     data.gain2_err = od.gain2_err;
+                data.gain3     = od.gain3;     data.gain3_err = od.gain3_err;
+                moduleGainHistory[moduleName].push_back(data);
+            }
+        }
+
+        refPMTLMSHistory.resize(3);
+        for (const auto& rp : online_refpmt_data) {
+            for (int i = 0; i < 3; ++i) {
+                RefPMTLMSData lms;
+                lms.cumulative_time = rp.cumulative_time;
+                lms.lms_signal      = rp.lms_signal[i];
+                lms.lms_error       = rp.lms_error[i];
+                refPMTLMSHistory[i].push_back(lms);
+            }
+        }
+    }
+
+    // ============ 2.Gain Stability
+    auto gainIt = moduleGainHistory.find(moduleName);
+    if (gainIt != moduleGainHistory.end() && !gainIt->second.empty()) {
+        plots.hasGainData = true;
+        const auto& gh = gainIt->second;
+        int n = gh.size();
+        std::vector<double> t(n), g1(n), e1(n), g2(n), e2(n), g3(n), e3(n);
+
+        if (is_online_mode) {
+            for (int i = 0; i < n; ++i) {
+                t[i]  = gh[i].cumulative_time / 3600.; // convert to hours
+                g1[i] = gh[i].gain1; e1[i] = gh[i].gain1_err;
+                g2[i] = gh[i].gain2; e2[i] = gh[i].gain2_err;
+                g3[i] = gh[i].gain3; e3[i] = gh[i].gain3_err;
+            }
+        } else {
+            std::vector<std::pair<double,int>> idx;
+            for (int i = 0; i < n; ++i)
+                idx.emplace_back(gh[i].cumulative_time, i);
+            std::sort(idx.begin(), idx.end());
+            for (int i = 0; i < n; ++i) {
+                int j = idx[i].second;
+                t[i]  = gh[j].cumulative_time;
+                g1[i] = gh[j].gain1; e1[i] = gh[j].gain1_err;
+                g2[i] = gh[j].gain2; e2[i] = gh[j].gain2_err;
+                g3[i] = gh[j].gain3; e3[i] = gh[j].gain3_err;
+            }
+        }
+
+        auto* gr1 = new TGraphErrors(n, t.data(), g1.data(), nullptr, e1.data());
+        gr1->SetName(Form("gain_graph1_%s", moduleName.c_str()));
+        auto* gr2 = new TGraphErrors(n, t.data(), g2.data(), nullptr, e2.data());
+        gr2->SetName(Form("gain_graph2_%s", moduleName.c_str()));
+        auto* gr3 = new TGraphErrors(n, t.data(), g3.data(), nullptr, e3.data());
+        gr3->SetName(Form("gain_graph3_%s", moduleName.c_str()));
+
+        gr1->SetTitle(Form("%s Gain Stability;%s;Gain Value", moduleName.c_str(),
+            is_online_mode ? "Time (hours since epoch, EDT)" : "Cumulative Time (seconds since epoch)"));
+
+        gr1->SetMarkerStyle(20); gr1->SetMarkerColor(kRed);   gr1->SetLineColor(kRed);
+        gr2->SetMarkerStyle(21); gr2->SetMarkerColor(kGreen); gr2->SetLineColor(kGreen);
+        gr3->SetMarkerStyle(22); gr3->SetMarkerColor(kBlue);  gr3->SetLineColor(kBlue);
+
+        gr1->GetXaxis()->SetLabelSize(HIST_LABEL_SIZE);
+        gr1->GetYaxis()->SetLabelSize(HIST_LABEL_SIZE);
+        gr1->GetXaxis()->SetTitleSize(HIST_FONT_SIZE);
+        gr1->GetYaxis()->SetTitleSize(HIST_FONT_SIZE);
+        gr1->GetXaxis()->SetTitleOffset(1.2);
+        gr1->GetYaxis()->SetTitleOffset(1.2);
+
+        double xMin = *std::min_element(t.begin(), t.end());
+        double xMax = *std::max_element(t.begin(), t.end());
+        double yMin = std::min({*std::min_element(g1.begin(), g1.end()),
+                                *std::min_element(g2.begin(), g2.end()),
+                                *std::min_element(g3.begin(), g3.end())});
+        double yMax = std::max({*std::max_element(g1.begin(), g1.end()),
+                                *std::max_element(g2.begin(), g2.end()),
+                                *std::max_element(g3.begin(), g3.end())});
+        double xM = (xMax - xMin) * 0.05, yM = (yMax - yMin) * 0.05;
+        gr1->GetXaxis()->SetRangeUser(xMin - xM, xMax + xM);
+        gr1->GetYaxis()->SetRangeUser(yMin - yM, yMax + yM);
+
+        auto* leg = new TLegend(0.7, 0.7, 0.9, 0.9);
+        leg->SetTextSize(HIST_FONT_SIZE);
+        leg->AddEntry(gr1, "RefPMT 1", "p");
+        leg->AddEntry(gr2, "RefPMT 2", "p");
+        leg->AddEntry(gr3, "RefPMT 3", "p");
+
+        plots.gainGraphs = {gr1, gr2, gr3};
+        plots.gainLegend = leg;
+    }
+
+    // ============ 3. plot for LMS Stability
+    for (int i = 0; i < 3; ++i) {
+        if (i >= static_cast<int>(refPMTLMSHistory.size()) || refPMTLMSHistory[i].empty())
+            continue;
+
+        const auto& pmt = refPMTLMSHistory[i];
+        int n = pmt.size();
+        std::vector<double> t(n), s(n), e(n);
+
+        if (is_online_mode) {
+            for (int j = 0; j < n; ++j) {
+                t[j] = pmt[j].cumulative_time / 3600.; // convert to hours
+                s[j] = pmt[j].lms_signal;
+                e[j] = pmt[j].lms_error;
+            }
+        } else {
+            std::vector<std::pair<double,int>> idx;
+            for (int j = 0; j < n; ++j)
+                idx.emplace_back(pmt[j].cumulative_time, j);
+            std::sort(idx.begin(), idx.end());
+            for (int j = 0; j < n; ++j) {
+                int k = idx[j].second;
+                t[j] = pmt[k].cumulative_time;
+                s[j] = pmt[k].lms_signal;
+                e[j] = pmt[k].lms_error;
+            }
+        }
+
+        auto* gr = new TGraphErrors(n, t.data(), s.data(), nullptr, e.data());
+        gr->SetName(Form("lms_graph_%d_%s", i, moduleName.c_str()));
+        gr->SetMarkerStyle(20 + i);
+        gr->SetMarkerColor(i == 0 ? kRed : (i == 1 ? kGreen : kBlue));
+        gr->SetLineColor(  i == 0 ? kRed : (i == 1 ? kGreen : kBlue));
+        plots.lmsGraphs.push_back(gr);
+    }
+
+    plots.hasLMSData = !plots.lmsGraphs.empty();
+
+    if (plots.hasLMSData) {
+        plots.lmsGraphs[0]->SetTitle(Form("Reference PMT LMS Stability;%s;LMS Signal",
+            is_online_mode ? "Time (hours since epoch, EDT)" : "Cumulative Time (seconds since epoch)"));
+
+        plots.lmsGraphs[0]->GetXaxis()->SetLabelSize(HIST_LABEL_SIZE);
+        plots.lmsGraphs[0]->GetYaxis()->SetLabelSize(HIST_LABEL_SIZE);
+        plots.lmsGraphs[0]->GetXaxis()->SetTitleSize(HIST_FONT_SIZE);
+        plots.lmsGraphs[0]->GetYaxis()->SetTitleSize(HIST_FONT_SIZE);
+        plots.lmsGraphs[0]->GetXaxis()->SetTitleOffset(1.2);
+        plots.lmsGraphs[0]->GetYaxis()->SetTitleOffset(1.2);
+
+        double xMn = plots.lmsGraphs[0]->GetX()[0], xMx = xMn;
+        double yMn = plots.lmsGraphs[0]->GetY()[0], yMx = yMn;
+        for (auto* gr : plots.lmsGraphs)
+            for (int j = 0; j < gr->GetN(); ++j) {
+                xMn = std::min(xMn, gr->GetX()[j]); xMx = std::max(xMx, gr->GetX()[j]);
+                yMn = std::min(yMn, gr->GetY()[j]); yMx = std::max(yMx, gr->GetY()[j]);
+            }
+        double xM = (xMx - xMn) * 0.05, yM = (yMx - yMn) * 0.05;
+        plots.lmsGraphs[0]->GetXaxis()->SetRangeUser(xMn - xM, xMx + xM);
+        plots.lmsGraphs[0]->GetYaxis()->SetRangeUser(yMn - yM, yMx + yM);
+
+        auto* leg = new TLegend(0.7, 0.7, 0.9, 0.9);
+        leg->SetTextSize(HIST_FONT_SIZE);
+        for (size_t i = 0; i < plots.lmsGraphs.size(); ++i)
+            leg->AddEntry(plots.lmsGraphs[i], Form("RefPMT %zu", i + 1), "p");
+        plots.lmsLegend = leg;
+    }
+
+    return plots;
+}
+
+std::pair<std::map<std::string, std::vector<OnlineModuleGainData>>, std::vector<OnlineRefPMTLMSData>> 
+PRadEventViewer::LoadOnlineGainData(const std::string& dir) {
+    std::map<std::string, std::vector<OnlineModuleGainData>> moduleGainMap;
+    std::vector<OnlineRefPMTLMSData> refPMTLMSList;
+    
+    QDir qdir(QString::fromStdString(dir));
+    if (!qdir.exists()) {
+        std::cerr << "[PRadEventViewer] Online data directory not found: " << dir << std::endl;
+        return {moduleGainMap, refPMTLMSList};
+    }
+
+    QStringList filters;
+    filters << "online_calculation_result_*.txt";
+    QStringList files = qdir.entryList(filters, QDir::Files | QDir::Readable);
+
+    for (const QString& file : files) {
+        std::string filename = qdir.absoluteFilePath(file).toStdString();
+        ParseOnlineGainFile(filename, moduleGainMap, refPMTLMSList);
+    }
+
+    for (auto& [moduleName, gainDataList] : moduleGainMap) {
+        std::sort(gainDataList.begin(), gainDataList.end(), 
+            [](const OnlineModuleGainData& a, const OnlineModuleGainData& b) {
+                return a.cumulative_time < b.cumulative_time;
+            });
+    }
+
+    std::sort(refPMTLMSList.begin(), refPMTLMSList.end(),
+        [](const OnlineRefPMTLMSData& a, const OnlineRefPMTLMSData& b) {
+            return a.cumulative_time < b.cumulative_time;
+        });
+
+    return {moduleGainMap, refPMTLMSList};
+}
+
+bool PRadEventViewer::ParseOnlineGainFile(const std::string& filename, 
+                         std::map<std::string, std::vector<OnlineModuleGainData>>& moduleGainMap,
+                         std::vector<OnlineRefPMTLMSData>& refPMTLMSList) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "[PRadEventViewer] Failed to open online file: " << filename << std::endl;
+        return false;
+    }
+
+    std::string line;
+    double avg_time_edt = 0.0;
+    OnlineRefPMTLMSData refpmt_data;
+    bool in_module_section = false;
+
+    std::regex time_regex(R"(#   Average Time \(seconds since epoch, EDT\): (\d+\.\d+))");
+    std::regex refpmt_regex(R"(# RefPMT(\d+): AlphaSignal=([\d\.]+), AlphaError=([\d\.]+), LMSSignal=([\d\.]+), LMSError=([\d\.]+), Valid=(\w+))");
+    std::smatch match;
+
+    while (std::getline(file, line)) {
+        if (std::regex_search(line, match, time_regex) && match.size() == 2) {
+            avg_time_edt = std::stod(match[1].str());
+            refpmt_data.cumulative_time = avg_time_edt;
+            continue;
+        }
+
+        if (std::regex_search(line, match, refpmt_regex) && match.size() == 7) {
+            int pmt_idx = std::stoi(match[1].str()) - 1;
+            if (pmt_idx >= 0 && pmt_idx < 3) {
+                refpmt_data.lms_signal[pmt_idx] = std::stod(match[4].str());
+                refpmt_data.lms_error[pmt_idx] = std::stod(match[5].str());
+            }
+            continue;
+        }
+
+        if (line.find("# G module") != std::string::npos || line.find("# W module") != std::string::npos) {
+            in_module_section = true;
+            continue;
+        }
+
+        if (in_module_section) {
+            if (line.empty() || line[0] == '#' || line.find("module name") != std::string::npos) {
+                continue;
+            }
+
+            std::istringstream ss(line);
+            OnlineModuleGainData data;
+            std::string token;
+            std::vector<std::string> tokens;
+
+            while (ss >> token) {
+                tokens.push_back(token);
+            }
+
+            if (tokens.size() >= 13) {
+                data.module_name = tokens[0];
+                data.cumulative_time = avg_time_edt;
+                try {
+                    data.gain1 = std::stod(tokens[7]);
+                    data.gain1_err = std::stod(tokens[8]);
+                    data.gain2 = std::stod(tokens[9]);
+                    data.gain2_err = std::stod(tokens[10]);
+                    data.gain3 = std::stod(tokens[11]);
+                    data.gain3_err = std::stod(tokens[12]);
+                } catch (const std::exception& e) {
+                    std::cerr << "[HistCanvas] Parse error in line: " << line << ", error: " << e.what() << std::endl;
+                    continue;
+                }
+                moduleGainMap[data.module_name].push_back(data);
+            } else {
+                std::cerr << "[HistCanvas] Invalid data line: " << line << std::endl;
+            }
+        }
+    }
+
+    if (avg_time_edt <= 0) {
+        std::cerr << "[HistCanvas] Failed to parse average time from file: " << filename << std::endl;
+        file.close();
+        return false;
+    }
+
+    refPMTLMSList.push_back(refpmt_data);
+
+    file.close();
+    return !moduleGainMap.empty();
+}
+
+// help functions for scintillator display
+bool PRadEventViewer::loadScintillatorConfig(const QString &path)
+{
+    std::ifstream in(path.toStdString());
+
+    if(!in)
+        return false;
+
+    scintConfigs.clear();
+
+    std::string line;
+
+    while(std::getline(in,line))
+    {
+        if(line.empty() || line[0]=='#')
+            continue;
+
+        std::stringstream ss(line);
+
+        ScintConfig cfg;
+
+        std::string name;
+
+        ss >> name
+           >> cfg.width
+           >> cfg.height
+           >> cfg.cx
+           >> cfg.cy;
+
+        cfg.name = QString::fromStdString(name);
+
+        scintConfigs.push_back(cfg);
+    }
+
+    return true;
+}
+
+void PRadEventViewer::generateScintillatorModules()
+{
+    const double scale = 4.0;
+
+    scintModules.clear();
+
+    for(const auto &cfg : scintConfigs)
+    {
+        double w = cfg.width * scale;
+        double h = cfg.height * scale;
+
+        QRectF rect(0,0,w,h);
+
+        auto mod = std::make_unique<ScintillatorModule>(
+            cfg.name,
+            rect
+        );
+
+        mod->setPos(
+            cfg.cx * scale - w/2,
+            cfg.cy * scale - h/2
+        );
+
+        scintScene->addItem(mod.get());
+        scintModules.push_back(std::move(mod));
+    }
+}
+
+void PRadEventViewer::updateScintillator()
+{
+    for(auto &m : scintModules)
+    {
+        bool hit = QRandomGenerator::global()->bounded(2);
+
+        m->SetHit(hit);
+    }
+}

@@ -11,6 +11,7 @@
 #include "ConfigParser.h"
 #include <iomanip>
 #include <utility>
+#include "TRandom.h"
 
 
 
@@ -309,6 +310,43 @@ const
         return 0;
 
     return module->GetEnergy((double)adcVal - pedestal.mean);
+}
+
+//test for plot new FADC raw data waveform
+TH1D *PRadADCChannel::GetWaveformHist() const
+{    
+    if(!module)
+        return nullptr;
+
+    //return module->GetWaveformHist();
+    int n_bins = 64;
+    TH1D *hist = new TH1D((ch_name+"_Waveform").c_str(), (ch_name+" Waveform").c_str(), n_bins, 0.5, (double)n_bins+0.5);
+    //fill the histogram with adc values, use random values for now to show functionality
+    double pedestal = 100;
+    double peakTime = gRandom->Gaus(80,3);
+    double amplitude = gRandom->Landau(150,30);
+    double tauRise = 8., tauFall = 90.;
+
+    for(int i=1;i<=n_bins;i++)
+    {   
+        double t = (i-0.5)*4.;
+
+        double signal = 0;
+
+        if(t > peakTime)
+        {
+            double x = t - peakTime;
+            signal = amplitude * (1-exp(-x/tauRise)) * exp(-x/tauFall);
+        }
+
+        double noise = gRandom->Gaus(0,8);
+
+        double adc = pedestal + signal + noise;
+
+        hist->SetBinContent(i, adc);
+    }
+
+    return hist;
 }
 
 std::ostream &operator <<(std::ostream &os, const PRadADCChannel::Pedestal &ped)
